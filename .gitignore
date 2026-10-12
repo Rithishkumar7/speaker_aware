@@ -1,0 +1,32 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+tool/__pycache__/
+
+# Datasets and large audio files
+dev-F8N/
+*.wav
+*.flac
+*.mp3
+*.mp4
+*.TextGrid
+*.zip
+*.tar.gz
+
+# Cache, models, and outputs
+output/
+.cache/
+whisperx_models/
+
+# Virtual environments
+.env
+.venv/
+venv/
+env/
+
+# IDE and agent files
+.vscode/
+.idea/
+.agents/
+.codex/

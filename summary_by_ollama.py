@@ -1,4 +1,5 @@
-import os, re, json, time, tqdm, tool, jieba, whisper, jiwer, zhconv
+import argparse
+import os, re, json, tqdm, tool, jieba
 from rouge_chinese import Rouge
 from zhon.hanzi import punctuation
 import cn2an
@@ -8,13 +9,15 @@ import numpy as np
 
 summary_prompt_start = '假设你是个高级秘书，下文我分{}将提供一份详细的会议记录，每行的格式是“开始时间-结束时间 说话人：说话内容”，请你帮我总结以上这段会议的内容: 1. 输出一份精简的会议摘要，要求逻辑通顺，在200-300字左右。2.输出一份详细的会议摘要，要求逻辑通顺，在800-1200字左右。'
 
-def main_summarize(data_json, model_name, spilt_num, summary_json):
+def main_summarize(data_json, model_name, spilt_num, summary_json, sessions=None):
     sub_summary_prompt_start = '假设你是个高级秘书，下文我将提供一份详细的会议记录，每行的格式是“开始时间-结束时间 说话人：说话内容”，请你帮我总结以上这段会议的内容, 输出一份详细的会议摘要，要求逻辑通顺'
     brief_summary_prompt = '假设你是个高级秘书，下文我将提供关于一场会议中连续的几个子会议摘要，请你帮我在这些子会议摘要的基础上，总结出整场会议的内容，输出一份精简的会议摘要，要求逻辑通顺，在200-300字左右。'
     detail_summary_prompt = '假设你是个高级秘书，下文我将提供关于一场会议中连续的几个子会议摘要，请你帮我在这些子会议摘要的基础上，总结出整场会议的内容，输出一份详细的会议摘要，要求逻辑通顺，在800-1200字左右。'
     data_dict = tool.json2dic(data_json)
     summary_dict = {}
     for key, value in tqdm.tqdm(data_dict.items()):
+        if sessions and key not in sessions:
+            continue
         value_lines= value.split('\n')
         all_lines_num = len(value_lines)
         chunk_size = (all_lines_num + spilt_num - 1) // spilt_num
@@ -48,7 +51,7 @@ def clear_up_summary_json(summary_json):
     for key, value in summary_dict.items():
         value = json.loads(value)
         all_summary = value['choices'][0]['message']['content'].replace('#', '')
-        summary_list = re.findall('精简会议摘要([\s\S]*)详细会议摘要([\s\S]*)', all_summary)
+        summary_list = re.findall(r'精简会议摘要([\s\S]*)详细会议摘要([\s\S]*)', all_summary)
         brief_summary = summary_list[0][0].strip().replace('（200-300字）', '')
         detailed_summary = summary_list[0][1].strip().replace('（800-1200字）', '')
         summary_dict[key] = {
@@ -133,19 +136,41 @@ def compute_blue(reference_json, hypothesis_json):
     return None
 
 if __name__ == '__main__':
-    model_name = 'deepseek-reasoner'
-    # 'qwen-long', , 'moonshot-v1-auto', 'gemini-2.0-flash', 'llama3.2', 'llama3.1'
-    summary_json='/disk5/hangchen/pandora/egs/misp-meeting/eval_far_gss/summary_CSOBx3_by_whisper-large-v3_by_{}.json'.format(model_name)
-    # main_summarize(
-    #     data_json='/disk5/hangchen/pandora/egs/misp-meeting/eval_far_gss/recognition_CSOBx3+gss_by_avsr.json', 
-    #     model_name=model_name, 
-    #     spilt_num=4,
-    #     summary_json=summary_json)
-    # clear_up_summary_json('/disk5/hangchen/pandora/egs/misp-meeting/eval_far_gss/summary_gss_whisper_large-v3_by_{}.json'.format(model_name))
-    # all_summary_label = tool.find_all_target_files('/disk3/hangchen/data/misp-meeting/eval', 'meeting_summary.json')
-    # merged_label = merge_summary_json(all_summary_label)
-    # tool.json2dic('/disk5/hangchen/pandora/egs/misp-meeting/eval_far_gss/meeting_summary.json', merged_label)
-    # compute_rouge(reference_json='/disk5/hangchen/pandora/egs/misp-meeting/eval_far_gss/meeting_summary.json', hypothesis_json=summary_json)
-    # 
-    # /disk5/hangchen/pandora/egs/misp-meeting/eval_far_gss/summary_gss_whisper_large-v3_by_qwen-long_clear_rouge.json
-    mean_rouge('/disk5/hangchen/pandora/egs/misp-meeting/eval_far_gss/summary_CSOBx3_by_whisper-large-v3_by_qwen-long_rouge.json')
+    parser = argparse.ArgumentParser(description='Summarize meeting transcripts with a local Ollama model.')
+    parser.add_argument('--input_json', help='Meeting transcript JSON. Defaults to WhisperX output, or TextGrid transcripts when unavailable.')
+    parser.add_argument('--output_json', help='Where to write the summaries.')
+    parser.add_argument('--model', default='llama3:latest', help='Installed Ollama model name.')
+    parser.add_argument('--splits', type=int, default=4, help='Transcript chunks per meeting.')
+    parser.add_argument('--sessions', nargs='*', help='Optional meeting IDs to summarize.')
+    parser.add_argument('--reference_json', help='Optional human-summary JSON for ROUGE evaluation.')
+    args = parser.parse_args()
+
+    project_root = os.path.dirname(os.path.abspath(__file__))
+    output_dir = os.path.join(project_root, 'output', 'dev-F8N')
+    whisper_model = 'small'
+    model_name = args.model
+    recognition_json = os.path.join(
+        output_dir,
+        'recognition_by_whisperx_{}_meeting.json'.format(whisper_model))
+    meeting_json = args.input_json or (
+        recognition_json if os.path.exists(recognition_json)
+        else os.path.join(output_dir, 'meeting_reference.json'))
+    summary_json = args.output_json or os.path.join(
+        output_dir,
+        'summary_by_whisperx_{}_ollama_{}.json'.format(whisper_model, model_name.replace(':', '-')))
+
+    if args.sessions:
+        meeting_dict = tool.json2dic(meeting_json)
+        missing = set(args.sessions) - set(meeting_dict)
+        if missing:
+            raise ValueError('Unknown sessions: {}'.format(', '.join(sorted(missing))))
+
+    main_summarize(
+        data_json=meeting_json,
+        model_name=model_name,
+        spilt_num=args.splits,
+        summary_json=summary_json,
+        sessions=args.sessions)
+
+    if args.reference_json:
+        compute_rouge(reference_json=args.reference_json, hypothesis_json=summary_json)
